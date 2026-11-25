@@ -1,0 +1,9 @@
+{
+  "stocks": ["COMI", "FWRY", "TMGH", "ETEL"],
+  "exchange": "EGX",
+  "extra": {},
+  "usd": "USDEGP.FOREX",
+  "aed": "AEDEGP.FOREX",
+  "gold": "XAUUSD.FOREX",
+  "useLatestQuotes": true
+}
