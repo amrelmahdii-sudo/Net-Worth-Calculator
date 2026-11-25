@@ -1,0 +1,36 @@
+name: Update prices
+
+on:
+  schedule:
+    # 9:00 and 15:30 Cairo time. Two UTC times each, so it works in winter (UTC+2) and summer (UTC+3);
+    # the script skips the run that's too early or already done.
+    - cron: '5 6,7 * * *'
+    - cron: '35 12,13 * * *'
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+concurrency:
+  group: update-prices
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch prices
+        env:
+          EODHD_KEY: ${{ secrets.EODHD_KEY }}
+        run: python3 update_prices.py
+      - name: Save prices.json
+        if: always()
+        run: |
+          if [ -z "$(git status --porcelain prices.json)" ]; then echo "No changes"; exit 0; fi
+          git config user.name "price-bot"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add prices.json
+          git commit -m "Prices $(TZ=Africa/Cairo date '+%Y-%m-%d %H:%M') Cairo"
+          git pull --rebase --quiet
+          git push
