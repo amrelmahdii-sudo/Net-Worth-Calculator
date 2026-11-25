@@ -1,0 +1,48 @@
+{
+ "config": {
+  "aed": "AEDEGP.FOREX",
+  "exchange": "EGX",
+  "gold": "XAUUSD.FOREX",
+  "usd": "USDEGP.FOREX",
+  "useLatestQuotes": true
+ },
+ "days": {
+  "2026-11-25": {
+   "aed": 14.8673,
+   "priceDates": {
+    "COMI": "2026-11-25",
+    "ETEL": "2026-11-25",
+    "FWRY": "2026-11-25",
+    "TMGH": "2026-11-25"
+   },
+   "prices": {
+    "COMI": 126.0,
+    "ETEL": 139.2,
+    "FWRY": 17.25,
+    "TMGH": 78.95
+   },
+   "slot": "close",
+   "updatedAt": "2026-11-25T18:12:41Z",
+   "usd": 54.6,
+   "xau": 3551.18
+  }
+ },
+ "runs": [
+  {
+   "date": "2026-11-25",
+   "errors": [
+    "AEDEGP.FOREX: HTTP Error 404: Not Found"
+   ],
+   "ok": true,
+   "received": 6,
+   "requested": 7,
+   "slot": "close",
+   "ts": 1795630361366,
+   "warnings": [
+    "AEDEGP.FOREX not received; kept None",
+    "AED/EGP worked out from USD/EGP ÷ 3.6725"
+   ]
+  }
+ ],
+ "updatedAt": "2026-11-25T18:12:41Z"
+}
