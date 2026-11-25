@@ -1,0 +1,26 @@
+{
+  "name": "Net Worth Ledger",
+  "short_name": "Net Worth",
+  "id": "./",
+  "start_url": "./#home",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#174a32",
+  "theme_color": "#174a32",
+  "description": "Personal net worth and monthly cashflow in EGP.",
+  "icons": [
+    {
+      "src": "icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ]
+}
