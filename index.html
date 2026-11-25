@@ -230,6 +230,7 @@ table.mom th:first-child{text-align:left}
   .grid2.four{grid-template-columns:repeat(4,1fr)}
 }
 a.pill-btn{color:inherit;text-decoration:none}
+.sheet-body>*{flex-shrink:0}
 
 </style>
 </head>
@@ -596,7 +597,7 @@ const initials = s => String(s || '?').replace(/[^A-Za-z0-9 ]/g, '').split(' ').
    Data & sync
    ========================================================= */
 const LS = { pass: 'nwl.pass', cache: 'nwl.cache', demo: 'nwl.demo' };
-let mode = 'server';           // 'server' = your Cloudflare Worker, 'claude' = your Claude account, 'local' = this browser only
+let mode = 'server';           // 'server' = your Cloudflare Worker, 'claude' = your Claude account, 'gh' = a private GitHub repository, 'local' = this browser only
 let state = blank();
 let version = 0;
 let dirty = false;
@@ -624,7 +625,7 @@ async function commit(mutate, okMsg) {
   mutate(state);
   refreshSnapshotDeltas(state);
   if (okMsg) toast(okMsg);
-  if (mode !== 'server') { if (mode === 'claude') { dirty = true; scheduleCloudSave(); } saveCache(); renderAll(); return; }
+  if (mode !== 'server') { if (mode === 'claude') { dirty = true; scheduleCloudSave(); } else if (mode === 'gh') { dirty = true; ghQueue(mutate); } saveCache(); renderAll(); return; }
   dirty = true; saveCache(); renderAll();
   await push(mutate);
 }
@@ -784,7 +785,7 @@ function feedUrls() {
   return urls;
 }
 async function loadFeed() {
-  if (mode !== 'local' || window.claude || location.protocol === 'file:') return null;
+  if (!webHosted() || location.protocol === 'file:') return null;
   for (const u of feedUrls()) {
     try {
       const r = await fetch(u + '?t=' + Date.now());
@@ -852,6 +853,175 @@ function githubConfigText() {
   state.investments.filter(i => i.kind === 'fund' && i.ticker && i.symbol).forEach(i => { extra[i.ticker.toUpperCase()] = i.symbol.toUpperCase(); });
   const base = (feed && feed.config) || {};
   return JSON.stringify({ stocks: [...new Set(stocks)], exchange: base.exchange || 'EGX', extra, usd: base.usd || 'USDEGP.FOREX', aed: base.aed || 'AEDEGP.FOREX', gold: base.gold || 'XAUUSD.FOREX', useLatestQuotes: base.useLatestQuotes !== false }, null, 2);
+}
+
+
+/* =========================================================
+   Sync through a private GitHub repository (GitHub Pages version)
+   The app keeps one file, ledger.json, in a private repository you own.
+   Your access token stays in this browser only and is never put in your data.
+   ========================================================= */
+const GH_KEY = 'nwl.gh';
+let gh = null, ghLastError = '';
+let ghPending = [], ghTimer = null, ghBusy = false, ghAgain = false;
+const webHosted = () => (mode === 'local' || mode === 'gh') && !window.claude;
+function ghConf() { try { const c = JSON.parse(lsGet(GH_KEY) || 'null'); return c && c.owner && c.repo && c.token ? c : null; } catch { return null; } }
+async function ghReq(method, path, body, accept) {
+  const r = await fetch(`https://api.github.com/repos/${encodeURIComponent(gh.owner)}/${encodeURIComponent(gh.repo)}${path}`, {
+    method, cache: 'no-store',
+    headers: { Authorization: 'Bearer ' + gh.token, Accept: accept || 'application/vnd.github+json', ...(body ? { 'Content-Type': 'application/json' } : {}) },
+    body: body ? JSON.stringify(body) : undefined });
+  let data = null;
+  try { data = accept && accept.includes('raw') ? await r.text() : await r.json(); } catch { data = null; }
+  return { status: r.status, data };
+}
+function ghErr(r) {
+  const msg = r.data && r.data.message ? String(r.data.message) : '';
+  const e = new Error(r.status === 401 ? 'the GitHub token is wrong or has expired'
+    : r.status === 403 ? (/rate limit/i.test(msg) ? 'GitHub\'s hourly limit was reached; try again later' : 'the token isn\'t allowed to do this (it needs Contents: Read and write on the repository)')
+    : r.status === 404 ? 'the repository wasn\'t found, or the token can\'t see it'
+    : msg || 'GitHub answered ' + r.status);
+  e.status = r.status; return e;
+}
+const b64e = str => { const bytes = new TextEncoder().encode(str); let bin = ''; for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000)); return btoa(bin); };
+const b64d = str => new TextDecoder().decode(Uint8Array.from(atob(String(str).replace(/\s/g, '')), ch => ch.charCodeAt(0)));
+const ghFile = () => '/contents/' + (gh.path || 'ledger.json').split('/').map(encodeURIComponent).join('/');
+async function ghGet() {
+  const r = await ghReq('GET', ghFile());
+  if (r.status === 404) {
+    const repo = await ghReq('GET', '');
+    if (repo.status !== 200) throw ghErr(repo);
+    return { exists: false };
+  }
+  if (r.status !== 200) throw ghErr(r);
+  let text = r.data && r.data.encoding === 'base64' && r.data.content ? b64d(r.data.content) : null;
+  if (text === null) { const raw = await ghReq('GET', ghFile(), null, 'application/vnd.github.raw+json'); if (raw.status !== 200) throw ghErr(raw); text = raw.data; }
+  const o = JSON.parse(text);
+  const st = normalize(o && o.data ? o.data : o);
+  refreshSnapshotDeltas(st);
+  return { exists: true, sha: r.data.sha, state: st };
+}
+async function ghPut(st, sha) {
+  const copy = JSON.parse(JSON.stringify(st));
+  copy.snapshots.forEach(x => SNAP_DERIVED.forEach(k => delete x[k]));
+  const body = { message: 'Net worth update ' + new Date().toISOString().slice(0, 16).replace('T', ' ') + ' UTC',
+    content: b64e(JSON.stringify({ app: 'networth-ledger', savedAt: new Date().toISOString(), data: copy })) };
+  if (sha) body.sha = sha;
+  const r = await ghReq('PUT', ghFile(), body);
+  if (r.status === 200 || r.status === 201) return r.data.content.sha;
+  if (r.status === 409 || r.status === 422) { const e = new Error('conflict'); e.conflict = true; throw e; }
+  throw ghErr(r);
+}
+function ghQueue(mutate) { if (mutate) ghPending.push(mutate); clearTimeout(ghTimer); ghTimer = setTimeout(ghSave, 1200); }
+async function ghSave() {
+  if (!gh) return;
+  if (ghBusy) { ghAgain = true; return; }
+  ghBusy = true; syncing = true; renderSyncIcon();
+  let n = ghPending.length;
+  try {
+    let sha;
+    try { sha = await ghPut(state, version || null); }
+    catch (e) {
+      if (!e.conflict) throw e;
+      // Another device saved first: take its copy and redo this device's changes on top.
+      const remote = await ghGet();
+      if (remote.exists && !ghPending.length) { ghBusy = false; syncing = false; renderSyncIcon(); ghConflictSheet(remote); return; }
+      if (remote.exists) { state = remote.state; n = ghPending.length; ghPending.forEach(m => m(state)); refreshSnapshotDeltas(state); }
+      sha = await ghPut(state, remote.exists ? remote.sha : null);
+    }
+    version = sha; ghPending = ghPending.slice(n); dirty = ghPending.length > 0; lastSync = Date.now(); ghLastError = ''; saveCache();
+  } catch (e) {
+    dirty = true; ghLastError = e.message; saveCache();
+    toast('Couldn\'t sync to GitHub: ' + e.message + '. Kept on this device.');
+  }
+  ghBusy = false; syncing = false; renderSyncIcon(); renderAll();
+  if (ghAgain) { ghAgain = false; ghSave(); }
+}
+async function ghLoad(announce) {
+  if (!gh) return;
+  try {
+    const r = await ghGet();
+    ghLastError = '';
+    if (!r.exists) { if (state.transactions.length || state.investments.length || state.gold.length) { dirty = true; ghQueue(null); } renderAll(); return; }
+    if (dirty) { if (r.sha === version) ghQueue(null); else ghConflictSheet(r); return; }
+    if (r.sha !== version) { state = r.state; version = r.sha; lastSync = Date.now(); saveCache(); renderAll(); }
+    else if (announce) toast('Already in sync');
+  } catch (e) {
+    ghLastError = e.message; renderAll();
+    if (announce) toast('Couldn\'t reach GitHub: ' + e.message);
+  }
+}
+function ghConflictSheet(remote) {
+  openSheet({ title: 'Two different copies', sub: 'This device has changes that weren\'t synced before another device saved.',
+    body: `<p class="muted small">Pick which copy to keep. The other is replaced; your repository keeps every earlier version in its history.</p>
+      <div class="actions"><button class="btn" type="button" data-a="remote">Use the synced copy</button><button class="btn dark" type="button" data-a="local">Keep this device's</button></div>`,
+    onMount(root, close) {
+      $('[data-a=remote]', root).addEventListener('click', () => { close(); state = remote.state; version = remote.sha; dirty = false; ghPending = []; saveCache(); renderAll(); toast('Using the synced copy'); });
+      $('[data-a=local]', root).addEventListener('click', async () => {
+        close();
+        try { version = await ghPut(state, remote.sha); dirty = false; ghPending = []; lastSync = Date.now(); saveCache(); toast('Kept this device\'s copy'); }
+        catch (e) { toast('Couldn\'t sync to GitHub: ' + e.message); }
+        renderAll();
+      });
+    } });
+}
+function ghSetupSheet() {
+  const m = location.hostname.match(/^([a-z0-9-]+)\.github\.io$/i);
+  const cur0 = ghConf() || { owner: m ? m[1] : '', repo: 'networth-data', token: '' };
+  openSheet({ title: 'Sync between devices', sub: 'Your data is saved to a private repository on your GitHub account.',
+    body: `<div class="card small" style="display:flex;flex-direction:column;gap:6px">
+        <b>One-time setup on github.com</b>
+        <span>1. Create a new <b>private</b> repository, for example <b>networth-data</b>. Tick "Add a README file".</span>
+        <span>2. Create an access token: <a href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noopener">github.com/settings/personal-access-tokens/new</a>. Under <b>Repository access</b> pick <b>Only select repositories</b> → your data repository. Under <b>Permissions</b> → <b>Contents</b> choose <b>Read and write</b>. Generate it and copy it.</span>
+        <span>3. Fill in below. Do the same on each device with the same token.</span>
+      </div>
+      <form class="form" novalidate>
+        <div class="fields">
+          <div class="field"><label for="g-owner">GitHub username</label><input id="g-owner" type="text" autocapitalize="off" autocomplete="username"></div>
+          <div class="field"><label for="g-repo">Private repository</label><input id="g-repo" type="text" autocapitalize="off"></div>
+          <div class="field full"><label for="g-token">Access token</label><input id="g-token" type="password" autocomplete="off" placeholder="github_pat_…"></div>
+        </div>
+        <p class="hint">The token is kept only in this browser. If you lose a device, delete the token on GitHub and make a new one.</p>
+        <p class="err" id="g-err" role="alert"></p>
+        <div class="actions"><button class="btn dark" type="submit" id="g-go">Connect</button></div>
+      </form>`,
+    onMount(root, close) {
+      const el = x => $('#' + x, root);
+      el('g-owner').value = cur0.owner; el('g-repo').value = cur0.repo; el('g-token').value = cur0.token || '';
+      $('form', root).addEventListener('submit', async e => {
+        e.preventDefault();
+        const err = t => { el('g-err').textContent = t; };
+        const conf = { owner: el('g-owner').value.trim(), repo: el('g-repo').value.trim(), token: el('g-token').value.trim(), path: 'ledger.json' };
+        if (!conf.owner || !conf.repo || !conf.token) return err('Fill in all three.');
+        el('g-go').disabled = true; el('g-go').textContent = 'Checking…'; err('');
+        const prev = gh; gh = conf;
+        try {
+          const repo = await ghReq('GET', '');
+          if (repo.status !== 200) throw ghErr(repo);
+          if (repo.data && repo.data.private === false) throw new Error(`${conf.owner}/${conf.repo} is public, so anyone could read your numbers. Make it private (Settings → Danger Zone → Change visibility) or use another repository`);
+          if (repo.data && repo.data.permissions && repo.data.permissions.push === false) throw new Error('the token can read but not save. Give it Contents: Read and write');
+          const remote = await ghGet();
+          const hasLocal = !state.sample && (state.transactions.length || state.investments.length || state.gold.length);
+          let useRemote = remote.exists;
+          if (remote.exists && hasLocal) {
+            close(true);
+            useRemote = await confirmSheet('Use the synced data on this device?', 'The repository already has your data. Replace what\'s on this device with it? Choose Cancel to send this device\'s data instead (the repository keeps the old version in its history).', 'Use synced data');
+          } else close(true);
+          lsSet(GH_KEY, JSON.stringify(conf)); mode = 'gh'; ghLastError = '';
+          if (useRemote) { state = remote.state; version = remote.sha; dirty = false; ghPending = []; lastSync = Date.now(); saveCache(); renderAll(); toast('Synced. Your data now comes from GitHub.'); }
+          else { version = remote.exists ? remote.sha : 0; dirty = true; ghPending = []; saveCache(); renderAll(); await ghSave(); if (!dirty) toast('Synced. This device\'s data is now on GitHub.'); }
+          syncFeed(false);
+        } catch (ex) {
+          gh = prev; err('Couldn\'t connect: ' + ex.message + '.');
+          el('g-go').disabled = false; el('g-go').textContent = 'Connect';
+        }
+      });
+      setTimeout(() => (cur0.owner ? el('g-token') : el('g-owner')).focus(), 50);
+    } });
+}
+function ghDisconnect() {
+  lsDel(GH_KEY); gh = null; mode = 'local'; version = 0; ghPending = []; dirty = false; ghLastError = ''; saveCache(); renderAll();
+  toast('Sync is off on this device. Your data stays here; the repository keeps its copy.');
 }
 
 /* =========================================================
@@ -1060,7 +1230,8 @@ function monthsList() {
 }
 function banners() {
   let h = '';
-  if (mode === 'local' && lsGet('nwl.localNote') !== '1') h += `<div class="banner info">${ic('phone')}<div class="grow"><b>Saved only in this browser.</b> Your other devices won't see it. Export a JSON backup from Settings now and then, and import it on another device.<div style="margin-top:8px"><button class="pill-btn" type="button" data-act="local-ok">Got it</button></div></div></div>`;
+  if (mode === 'local' && lsGet('nwl.localNote') !== '1') h += `<div class="banner info">${ic('phone')}<div class="grow"><b>Saved only in this browser.</b> Your other devices won't see it.${webHosted() ? ' Set up sync to share one copy between your phone and laptop.' : ' Export a JSON backup from Settings now and then.'}<div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap">${webHosted() ? '<button class="pill-btn dark" type="button" data-act="gh-setup">Set up sync</button>' : ''}<button class="pill-btn" type="button" data-act="local-ok">${webHosted() ? 'Not now' : 'Got it'}</button></div></div></div>`;
+  if (mode === 'gh' && ghLastError) h += `<div class="banner">${ic('x')}<div class="grow"><b>GitHub sync isn't working:</b> ${esc(ghLastError)}. Your changes are kept on this device.<div style="margin-top:8px"><button class="pill-btn" type="button" data-act="gh-setup">Fix sync settings</button></div></div></div>`;
   if (state.sample) h += `<div class="banner">${ic('star')}<div class="grow">You're looking at <b>example data</b> with made-up prices.<div style="margin-top:8px"><button class="pill-btn" type="button" data-act="clear-sample">Clear it and start fresh</button></div></div></div>`;
   const last = feed ? (feed.runs || []).slice(-1)[0] : (state.marketLog || []).slice(-1)[0];
   if ((mode === 'server' || feed) && last && !last.ok && !last.example) h += `<div class="banner">${ic('clock')}<div class="grow"><b>Last price update failed</b> (${esc(timeLabel(last.ts))}): ${esc(last.errors[0] || 'unknown error')}</div></div>`;
@@ -1855,7 +2026,12 @@ function pasteSheet() {
 function settingsSheet() {
   const s = state.settings;
   const lastLog = (state.marketLog || []).slice(-1)[0];
-  const subLine = mode === 'local' ? 'Saved only in this browser' : `${mode === 'claude' ? 'Saved to your Claude account' : 'Synced'} ${lastSync ? timeLabel(lastSync) : ''}${dirty ? ' · changes waiting to save' : ''}`;
+  const subLine = mode === 'local' ? 'Saved only in this browser' : `${mode === 'claude' ? 'Saved to your Claude account' : mode === 'gh' ? `Synced via GitHub (${gh.owner}/${gh.repo})` : 'Synced'} ${lastSync ? timeLabel(lastSync) : ''}${dirty ? ' · changes waiting to save' : ''}`;
+  const syncBlock = !webHosted() ? '' : `<div class="group-label">Sync between devices</div><div class="list">${mode === 'gh'
+    ? `<button class="row" type="button" data-x="gh-now"><span class="avatar-ic good">${ic('refresh')}</span><span class="grow"><span class="title">Sync now</span><span class="sub" style="display:block">${esc(gh.owner + '/' + gh.repo)}${ghLastError ? ' · problem: ' + esc(ghLastError) : ''}</span></span></button>
+       <button class="row" type="button" data-x="gh-setup"><span class="avatar-ic">${ic('sliders')}</span><span class="grow"><span class="title">Change sync settings</span><span class="sub" style="display:block">Repository or access token</span></span></button>
+       <button class="row" type="button" data-x="gh-off"><span class="avatar-ic warn">${ic('lock')}</span><span class="grow"><span class="title">Stop syncing on this device</span><span class="sub" style="display:block">Forgets the token here</span></span></button>`
+    : `<button class="row" type="button" data-x="gh-setup"><span class="avatar-ic">${ic('refresh')}</span><span class="grow"><span class="title">Set up sync with GitHub</span><span class="sub" style="display:block">One copy shared by your phone and laptop</span></span></button>`}</div>`;
   openSheet({ title: 'Settings', sub: subLine,
     body: `<div ${mode === 'server' || feed ? '' : 'hidden'} style="display:flex;flex-direction:column;gap:14px"><label class="toggle"><span><b>${feed ? 'Automatic prices from GitHub' : 'Automatic price updates'}</b><br><span class="small muted">9:00 and 15:30 Cairo time, every day</span></span><input type="checkbox" id="st-auto"${s.autoUpdate ? ' checked' : ''}></label>
       <div class="card" style="display:flex;flex-direction:column;gap:10px">
@@ -1874,6 +2050,7 @@ function settingsSheet() {
       </details>
       <div class="actions"><button class="btn dark" type="button" data-a="save">Save settings</button></div></div>
       ${mode === 'server' && lastLog ? `<p class="small muted">Last update: ${esc(timeLabel(lastLog.ts))} · ${lastLog.ok ? `${lastLog.received} of ${lastLog.requested} prices` : esc(lastLog.errors[0] || 'failed')}${(lastLog.warnings || []).length ? '<br>' + lastLog.warnings.map(esc).join('<br>') : ''}</p>` : ''}
+      ${syncBlock}
       <div class="group-label">Backup</div>
       <div class="list">
         <button class="row" type="button" data-x="json"><span class="avatar-ic">${ic('download')}</span><span class="grow"><span class="title">Export JSON backup</span></span></button>
@@ -1882,7 +2059,7 @@ function settingsSheet() {
         <button class="row" type="button" data-x="hold"><span class="avatar-ic">${ic('download')}</span><span class="grow"><span class="title">Export holdings (CSV)</span></span></button>
         <label class="row" for="st-file"><span class="avatar-ic">${ic('upload')}</span><span class="grow"><span class="title">Import JSON backup file</span><span class="sub" style="display:block">Also accepts the backup from the earlier ledger page</span></span></label>
         <button class="row" type="button" data-x="paste"><span class="avatar-ic">${ic('upload')}</span><span class="grow"><span class="title">Paste a backup</span><span class="sub" style="display:block">If you copied the backup as text</span></span></button>
-        ${mode === 'local' && !window.claude ? `<button class="row" type="button" data-x="ghconfig"><span class="avatar-ic">${ic('list')}</span><span class="grow"><span class="title">Copy price list for GitHub</span><span class="sub" style="display:block">Your tickers, ready to paste into config.json</span></span></button>` : ''}
+        ${webHosted() ? `<button class="row" type="button" data-x="ghconfig"><span class="avatar-ic">${ic('list')}</span><span class="grow"><span class="title">Copy price list for GitHub</span><span class="sub" style="display:block">Your tickers, ready to paste into config.json</span></span></button>` : ''}
       </div>
       <input type="file" id="st-file" accept=".json,application/json" hidden>
       <div class="group-label">This phone</div>
@@ -1904,6 +2081,9 @@ function settingsSheet() {
         else if (['tx', 'snap', 'hold'].includes(x)) exportCSV(x);
         else if (x === 'paste') { close(true); pasteSheet(); }
         else if (x === 'ghconfig') { close(true); textSheet('config.json', githubConfigText()); }
+        else if (x === 'gh-setup') { close(true); ghSetupSheet(); }
+        else if (x === 'gh-now') { close(); if (dirty) ghSave(); else ghLoad(true); }
+        else if (x === 'gh-off') { close(); if (await confirmSheet('Stop syncing on this device?', 'This device keeps its current copy, but changes here won\'t reach your other devices. You can set it up again any time.', 'Stop syncing', true)) ghDisconnect(); }
         else if (x === 'lock') { close(); lsDel(LS.pass); lsDel(LS.cache); showLock('Locked. Enter your passcode to open.'); }
         else if (x === 'sample') { close(); const smp = sampleState(); ui.month = null; commit(st => { Object.keys(st).forEach(k => delete st[k]); Object.assign(st, smp); }, 'Example data loaded'); }
         else if (x === 'erase') { close(); if (await confirmSheet('Erase all data?', 'Every transaction, holding and snapshot will be deleted' + (mode === 'server' ? ' from your server' : mode === 'claude' ? ' from your Claude account' : '') + '. Export a backup first if you might need it.', 'Erase everything', true)) { const st0 = state.settings; ui.month = null; commit(st => { Object.keys(st).forEach(k => delete st[k]); Object.assign(st, blank(), { settings: st0 }); }, 'All data erased'); } }
@@ -1973,6 +2153,7 @@ function bindChrome() {
     if (document.visibilityState !== 'visible' || Date.now() - lastPull < 60000 || sheetClose) return;
     lastPull = Date.now();
     if (mode === 'server') { if (dirty) push(null); else pull(true); }
+    else if (mode === 'gh') { if (dirty) ghSave(); else { await ghLoad(false); syncFeed(false); } }
     else if (mode === 'local' && feed) syncFeed(false);
     else if (mode === 'claude') { if (dirty) cloudSave(); else { try { const st = await cloudLoad(); if (st && !dirty) { state = st; saveCache(); renderAll(); } } catch { /* keep current */ } } }
   });
@@ -1994,6 +2175,7 @@ function bindChrome() {
     else if (d.snap) snapSheet(d.snap);
     else if (d.act === 'new-tx') addSheet();
     else if (d.act === 'local-ok') { lsSet('nwl.localNote', '1'); renderAll(); }
+    else if (d.act === 'gh-setup') ghSetupSheet();
     else if (d.act === 'refresh') refreshPrices();
     else if (d.act === 'feed') syncFeed(true);
     else if (d.act === 'rates') ratesSheet();
@@ -2016,8 +2198,10 @@ async function boot() {
     // Show this device's copy at once, then switch to your Claude account when the page runs inside Claude.
     const c = readCache(LS.demo);
     state = c ? normalize(c.state) : blank();
-    if (c) { dirty = !!c.dirty; lastSync = c.lastSync || null; }
+    if (c) { dirty = !!c.dirty; lastSync = c.lastSync || null; version = c.version || 0; }
     refreshSnapshotDeltas(state);
+    const ghc = window.claude ? null : ghConf();
+    if (ghc) { gh = ghc; mode = 'gh'; }
     $('#app').hidden = false; showTab(location.hash.slice(1) || 'home');
     if (await connectClaude()) {
       mode = 'claude'; syncing = true; renderAll();
@@ -2035,6 +2219,11 @@ async function boot() {
         syncing = false; renderAll();
         toast('Couldn\'t reach your Claude data. Showing this device\'s copy.');
       }
+    } else if (mode === 'gh') {
+      renderAll();
+      await ghLoad(false);
+      if (!c && !state.transactions.length && !state.investments.length && !state.gold.length && !state.sample) firstRunSheet();
+      syncFeed(false);
     } else {
       renderAll();
       if (!c) firstRunSheet();
