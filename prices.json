@@ -25,6 +25,25 @@
    "updatedAt": "2026-11-25T18:12:41Z",
    "usd": 54.6,
    "xau": 3551.18
+  },
+  "2026-11-26": {
+   "aed": 14.8754,
+   "priceDates": {
+    "COMI": "2026-11-26",
+    "ETEL": "2026-11-26",
+    "FWRY": "2026-11-26",
+    "TMGH": "2026-11-26"
+   },
+   "prices": {
+    "COMI": 126.0,
+    "ETEL": 139.2,
+    "FWRY": 17.25,
+    "TMGH": 78.95
+   },
+   "slot": "morning",
+   "updatedAt": "2026-11-26T07:05:50Z",
+   "usd": 54.63,
+   "xau": 3576.36
   }
  },
  "runs": [
@@ -42,7 +61,22 @@
     "AEDEGP.FOREX not received; kept None",
     "AED/EGP worked out from USD/EGP ÷ 3.6725"
    ]
+  },
+  {
+   "date": "2026-11-26",
+   "errors": [
+    "AEDEGP.FOREX: HTTP Error 404: Not Found"
+   ],
+   "ok": true,
+   "received": 6,
+   "requested": 7,
+   "slot": "morning",
+   "ts": 1795676750364,
+   "warnings": [
+    "AEDEGP.FOREX not received; kept 14.8673",
+    "AED/EGP worked out from USD/EGP ÷ 3.6725"
+   ]
   }
  ],
- "updatedAt": "2026-11-25T18:12:41Z"
+ "updatedAt": "2026-11-26T07:05:50Z"
 }
