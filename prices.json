@@ -59,8 +59,8 @@
     "FWRY": 17.2,
     "TMGH": 79.24
    },
-   "slot": "morning",
-   "updatedAt": "2026-11-27T07:06:34Z",
+   "slot": "close",
+   "updatedAt": "2026-11-27T13:51:53Z",
    "usd": 54.77,
    "xau": 3567.99
   }
@@ -125,7 +125,22 @@
     "AEDEGP.FOREX not received; kept 14.8863",
     "AED/EGP worked out from USD/EGP ÷ 3.6725"
    ]
+  },
+  {
+   "date": "2026-11-27",
+   "errors": [
+    "AEDEGP.FOREX: HTTP Error 404: Not Found"
+   ],
+   "ok": true,
+   "received": 6,
+   "requested": 7,
+   "slot": "close",
+   "ts": 1795787513513,
+   "warnings": [
+    "AEDEGP.FOREX not received; kept 14.9135",
+    "AED/EGP worked out from USD/EGP ÷ 3.6725"
+   ]
   }
  ],
- "updatedAt": "2026-11-27T07:06:34Z"
+ "updatedAt": "2026-11-27T13:51:53Z"
 }
